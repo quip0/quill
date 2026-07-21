@@ -96,7 +96,11 @@ function HomePage:build()
         fgcolor = Blitbuffer.Color8(0x77),
     })
 
-    table.insert(body, VerticalSpan:new{ width = Size.padding.large * 3 })
+    -- Kept as a reference: once the rows are measured, whatever vertical room
+    -- is still unused gets folded into this gap, so the book strip sits against
+    -- the bottom of the panel instead of leaving a dead band under it.
+    local flex_gap = VerticalSpan:new{ width = Size.padding.large * 3 }
+    table.insert(body, flex_gap)
     table.insert(body, sectionLabel(_("Continue reading"), content_w))
     table.insert(body, VerticalSpan:new{ width = Size.padding.default })
 
@@ -135,6 +139,15 @@ function HomePage:build()
 
     body:resetLayout()
 
+    -- Absorb the leftover strip at the bottom. Measured after resetLayout so the
+    -- group re-adds up the rows that were appended past the mid-build getSize().
+    local top_pad = Size.padding.large * 3
+    local leftover = self.screen_h - top_pad * 2 - body:getSize().h
+    if leftover > 0 then
+        flex_gap.width = flex_gap.width + leftover
+        body:resetLayout()
+    end
+
     self[1] = FrameContainer:new{
         width = self.screen_w,
         height = self.screen_h,
@@ -144,7 +157,7 @@ function HomePage:build()
         margin = 0,
         VerticalGroup:new{
             align = "left",
-            VerticalSpan:new{ width = Size.padding.large * 3 },
+            VerticalSpan:new{ width = top_pad },
             CenterContainer:new{
                 dimen = Geom:new{ w = self.screen_w, h = body:getSize().h },
                 body,
