@@ -16,6 +16,7 @@ local Geom = require("ui/geometry")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local Size = require("ui/size")
+local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
@@ -24,6 +25,7 @@ local _ = require("gettext")
 
 local BookRow = require("widgets/book_row")
 local Heatmap = require("widgets/heatmap")
+local Quotes = require("common/quotes")
 local Recent = require("common/recent")
 local Stats = require("common/stats")
 
@@ -96,6 +98,33 @@ function HomePage:build()
         fgcolor = Blitbuffer.Color8(0x77),
     })
 
+    -- Zen UI's quote of the day, sitting between the activity block and the
+    -- books. Skipped entirely when Zen UI isn't installed or its list is empty,
+    -- so the rest of the page just closes up around it.
+    local quote = Quotes.getDaily()
+    local quote_box, quote_index
+    if quote then
+        table.insert(body, VerticalSpan:new{ width = Size.padding.large * 3 })
+        table.insert(body, sectionLabel(_("Today's quote"), content_w))
+        table.insert(body, VerticalSpan:new{ width = Size.padding.default })
+        quote_box = TextBoxWidget:new{
+            text = "\226\128\156" .. quote.text .. "\226\128\157",
+            width = content_w,
+            face = Font:getFace("cfont", 15),
+            alignment = "left",
+        }
+        table.insert(body, quote_box)
+        quote_index = #body
+        if quote.author ~= "" then
+            table.insert(body, VerticalSpan:new{ width = Size.padding.small })
+            table.insert(body, TextWidget:new{
+                text = "\226\128\148 " .. quote.author,
+                face = Font:getFace("cfont", 13),
+                fgcolor = Blitbuffer.Color8(0x77),
+            })
+        end
+    end
+
     -- Kept as a reference: once the rows are measured, whatever vertical room
     -- is still unused gets folded into this gap, so the book strip sits against
     -- the bottom of the panel instead of leaving a dead band under it.
@@ -143,6 +172,31 @@ function HomePage:build()
     -- group re-adds up the rows that were appended past the mid-build getSize().
     local top_pad = Size.padding.large * 3
     local leftover = self.screen_h - top_pad * 2 - body:getSize().h
+
+    -- A long quote can eat the room the book rows need. The quote is the only
+    -- elastic block on the page, so claw the overflow back by clipping it to
+    -- fewer lines rather than pushing the third book off the panel.
+    if leftover < 0 and quote_box then
+        local line_h = quote_box:getLineHeight()
+        local natural_h = quote_box:getSize().h
+        local clipped_h = math.max(line_h, natural_h + leftover)
+        if clipped_h < natural_h then
+            local clipped = TextBoxWidget:new{
+                text = quote_box.text,
+                width = content_w,
+                face = quote_box.face,
+                alignment = "left",
+                height = clipped_h,
+                height_overflow_show_ellipsis = true,
+            }
+            quote_box:free()
+            body[quote_index] = clipped
+            quote_box = clipped
+            body:resetLayout()
+            leftover = self.screen_h - top_pad * 2 - body:getSize().h
+        end
+    end
+
     if leftover > 0 then
         flex_gap.width = flex_gap.width + leftover
         body:resetLayout()

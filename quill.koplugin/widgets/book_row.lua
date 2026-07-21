@@ -106,12 +106,18 @@ function BookRow:init()
         })
     end
 
+    -- The text stack has a floor of its own (title, author, progress bar,
+    -- percentage) and can easily out-measure a shrunken cover. Sizing the
+    -- container to the cover alone would let it paint past its own bounds and
+    -- silently overlap whatever follows, so the row takes the taller of the two.
+    local row_h = math.max(cover_h, lines:getSize().h)
+
     local row = HorizontalGroup:new{
         align = "center",
         cover,
         HorizontalSpan:new{ width = pad },
         LeftContainer:new{
-            dimen = Geom:new{ w = text_w, h = cover_h },
+            dimen = Geom:new{ w = text_w, h = row_h },
             lines,
         },
     }
