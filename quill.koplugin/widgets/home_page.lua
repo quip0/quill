@@ -34,6 +34,11 @@ local Screen = Device.screen
 local HEATMAP_WEEKS = 26
 local RECENT_COUNT = 3
 
+-- The quote sets at QUOTE_MAX_PT and steps down a point at a time until the
+-- page fits. Nothing below QUOTE_MIN_PT is worth reading on e-ink.
+local QUOTE_MAX_PT = 15
+local QUOTE_MIN_PT = 9
+
 local HomePage = InputContainer:extend{
     covers_fullscreen = true,
 }
@@ -103,16 +108,20 @@ function HomePage:build()
     -- so the rest of the page just closes up around it.
     local quote = Quotes.getDaily()
     local quote_box, quote_index
+    local buildQuoteBox
     if quote then
+        -- The quote is never truncated: when the page runs long the type size
+        -- comes down instead, so a wordy quote simply sets smaller.
+        buildQuoteBox = function(pt)
+            return TextBoxWidget:new{
+                text = "\226\128\156" .. quote.text .. "\226\128\157",
+                width = content_w,
+                face = Font:getFace("cfont", pt),
+                alignment = "left",
+            }
+        end
         table.insert(body, VerticalSpan:new{ width = Size.padding.large * 3 })
-        table.insert(body, sectionLabel(_("Today's quote"), content_w))
-        table.insert(body, VerticalSpan:new{ width = Size.padding.default })
-        quote_box = TextBoxWidget:new{
-            text = "\226\128\156" .. quote.text .. "\226\128\157",
-            width = content_w,
-            face = Font:getFace("cfont", 15),
-            alignment = "left",
-        }
+        quote_box = buildQuoteBox(QUOTE_MAX_PT)
         table.insert(body, quote_box)
         quote_index = #body
         if quote.author ~= "" then
@@ -173,27 +182,19 @@ function HomePage:build()
     local top_pad = Size.padding.large * 3
     local leftover = self.screen_h - top_pad * 2 - body:getSize().h
 
-    -- A long quote can eat the room the book rows need. The quote is the only
-    -- elastic block on the page, so claw the overflow back by clipping it to
-    -- fewer lines rather than pushing the third book off the panel.
+    -- A long quote can eat the room the book rows need. Rather than truncate it,
+    -- step the type down a point at a time until the whole thing fits: the quote
+    -- is the only block on the page that can give, and every word stays on
+    -- screen. Long quotes just set smaller than short ones.
     if leftover < 0 and quote_box then
-        local line_h = quote_box:getLineHeight()
-        local natural_h = quote_box:getSize().h
-        local clipped_h = math.max(line_h, natural_h + leftover)
-        if clipped_h < natural_h then
-            local clipped = TextBoxWidget:new{
-                text = quote_box.text,
-                width = content_w,
-                face = quote_box.face,
-                alignment = "left",
-                height = clipped_h,
-                height_overflow_show_ellipsis = true,
-            }
+        for pt = QUOTE_MAX_PT - 1, QUOTE_MIN_PT, -1 do
+            local smaller = buildQuoteBox(pt)
             quote_box:free()
-            body[quote_index] = clipped
-            quote_box = clipped
+            body[quote_index] = smaller
+            quote_box = smaller
             body:resetLayout()
             leftover = self.screen_h - top_pad * 2 - body:getSize().h
+            if leftover >= 0 then break end
         end
     end
 
