@@ -103,7 +103,19 @@ function HomePage:build()
     table.insert(body, sectionLabel(_("Continue reading"), content_w))
     table.insert(body, VerticalSpan:new{ width = Size.padding.default })
 
-    local books = Recent.getBooks(RECENT_COUNT)
+    -- Size the covers to whatever vertical room is left, so all three rows fit
+    -- regardless of panel height, and never exceed a comfortable maximum.
+    -- getSize() memoizes child offsets, so anything measured mid-build must be
+    -- followed by resetLayout() once the remaining children are appended --
+    -- otherwise paintTo walks a stale offset table and indexes nil.
+    local used_h = bar:getSize().h + body:getSize().h + Size.padding.large * 4
+    local per_row = math.floor((self.screen_h - used_h) / RECENT_COUNT)
+    local cover_h = math.max(
+        Screen:scaleBySize(64),
+        math.min(Screen:scaleBySize(120), per_row - Size.padding.large * 2))
+    local cover_w = math.floor(cover_h * 2 / 3)
+
+    local books = Recent.getBooks(RECENT_COUNT, cover_w, cover_h)
     if #books == 0 then
         table.insert(body, TextWidget:new{
             text = _("No books opened yet."),
@@ -118,10 +130,13 @@ function HomePage:build()
             table.insert(body, BookRow:new{
                 book = book,
                 width = content_w,
+                cover_h = cover_h,
                 on_tap = function(b) self:openBook(b) end,
             })
         end
     end
+
+    body:resetLayout()
 
     self[1] = FrameContainer:new{
         width = self.screen_w,

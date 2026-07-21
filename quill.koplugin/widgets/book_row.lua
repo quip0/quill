@@ -28,16 +28,24 @@ local BookRow = InputContainer:extend{
     on_tap = nil,
 }
 
+-- A blank widget with a real width AND height. VerticalSpan/HorizontalSpan each
+-- report zero on their other axis, so a FrameContainer built around one of them
+-- measures as zero-width and the next widget in a HorizontalGroup overlaps it.
+local Spacer = require("ui/widget/widget"):extend{ w = 0, h = 0 }
+function Spacer:getSize()
+    return Geom:new{ w = self.w, h = self.h }
+end
+
 --- Placeholder for books whose cover hasn't been extracted yet.
 local function coverPlaceholder(w, h)
+    local border = Size.border.thin
     return FrameContainer:new{
-        width = w,
-        height = h,
-        bordersize = Size.border.thin,
+        bordersize = border,
         color = Blitbuffer.Color8(0x99),
         background = Blitbuffer.Color8(0xE8),
         padding = 0,
-        VerticalSpan:new{ width = h - 2 * Size.border.thin },
+        margin = 0,
+        Spacer:new{ w = w - 2 * border, h = h - 2 * border },
     }
 end
 

@@ -19,6 +19,20 @@ function Quill:init()
         self.ui.menu:registerToMainMenu(self)
     end
     self:onDispatcherRegisterActions()
+
+    -- Dev aid: QUILL_AUTOSHOW=1 opens the home page on startup, so the
+    -- emulator can be smoke-tested without driving the UI by hand.
+    if os.getenv("QUILL_AUTOSHOW") and not rawget(_G, "__quill_autoshown") then
+        rawset(_G, "__quill_autoshown", true)
+        UIManager:scheduleIn(1, function() self:showHome() end)
+        -- QUILL_SHOT=<path> also dumps the rendered page to a PNG.
+        local shot = os.getenv("QUILL_SHOT")
+        if shot then
+            UIManager:scheduleIn(3, function()
+                require("device").screen:shot(shot)
+            end)
+        end
+    end
 end
 
 function Quill:onDispatcherRegisterActions()

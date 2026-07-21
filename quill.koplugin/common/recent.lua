@@ -52,6 +52,16 @@ function Recent.getBooks(limit, cover_w, cover_h)
 
             if ok_bim then
                 local info = BookInfoManager:getBookInfo(path, true)
+                -- Nothing cached yet (fresh install, or CoverBrowser has never
+                -- scanned this folder). Extract inline: we only ever do this for
+                -- a handful of books, and only once -- the result is cached.
+                if not info or (not info.cover_fetched and not info.ignore_cover) then
+                    pcall(BookInfoManager.extractBookInfo, BookInfoManager, path, {
+                        max_cover_w = cover_w or 200,
+                        max_cover_h = cover_h or 300,
+                    })
+                    info = BookInfoManager:getBookInfo(path, true)
+                end
                 if info then
                     if info.title and info.title ~= "" then book.title = info.title end
                     book.authors = info.authors
