@@ -26,7 +26,6 @@ local BookRow = require("widgets/book_row")
 local Heatmap = require("widgets/heatmap")
 local Recent = require("common/recent")
 local Stats = require("common/stats")
-local TopBar = require("widgets/topbar")
 
 local Screen = Device.screen
 
@@ -74,8 +73,6 @@ function HomePage:build()
     local margin = Size.padding.large * 2
     local content_w = self.screen_w - margin * 2
 
-    local bar = TopBar.build(self:topBarButtons(), self.screen_w)
-
     -- Half a year of history is enough to read at a glance without the
     -- squares getting too small on a 6.8" panel.
     local since = os.time() - HEATMAP_WEEKS * 7 * 86400
@@ -108,7 +105,7 @@ function HomePage:build()
     -- getSize() memoizes child offsets, so anything measured mid-build must be
     -- followed by resetLayout() once the remaining children are appended --
     -- otherwise paintTo walks a stale offset table and indexes nil.
-    local used_h = bar:getSize().h + body:getSize().h + Size.padding.large * 4
+    local used_h = body:getSize().h + Size.padding.large * 4
     local per_row = math.floor((self.screen_h - used_h) / RECENT_COUNT)
     local cover_h = math.max(
         Screen:scaleBySize(64),
@@ -147,49 +144,13 @@ function HomePage:build()
         margin = 0,
         VerticalGroup:new{
             align = "left",
-            bar,
-            VerticalSpan:new{ width = Size.padding.large * 2 },
+            VerticalSpan:new{ width = Size.padding.large * 3 },
             CenterContainer:new{
                 dimen = Geom:new{ w = self.screen_w, h = body:getSize().h },
                 body,
             },
         },
     }
-end
-
-function HomePage:topBarButtons()
-    return {
-        {
-            icon = "appbar.filebrowser",
-            callback = function() self:showFileBrowser() end,
-        },
-        {
-            icon = "appbar.search",
-            callback = function()
-                UIManager:close(self)
-                UIManager:broadcastEvent(require("ui/event"):new("ShowFileSearch"))
-            end,
-        },
-        {
-            -- KOReader core ships no history icon; Zen has one (tab_history.svg)
-            -- but copying it would pull Zen's GPL-3 into this repo.
-            icon = "book.opened",
-            callback = function()
-                UIManager:close(self)
-                UIManager:broadcastEvent(require("ui/event"):new("ShowHist"))
-            end,
-        },
-        {
-            icon = "appbar.settings",
-            callback = function()
-                UIManager:broadcastEvent(require("ui/event"):new("ShowMenu"))
-            end,
-        },
-    }
-end
-
-function HomePage:showFileBrowser()
-    UIManager:close(self)
 end
 
 function HomePage:openBook(book)
