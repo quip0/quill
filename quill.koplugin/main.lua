@@ -20,18 +20,28 @@ function Quill:init()
     end
     self:onDispatcherRegisterActions()
 
-    -- Dev aid: QUILL_AUTOSHOW=1 opens the home page on startup, so the
-    -- emulator can be smoke-tested without driving the UI by hand.
-    if os.getenv("QUILL_AUTOSHOW") and not rawget(_G, "__quill_autoshown") then
-        rawset(_G, "__quill_autoshown", true)
+    self:setupDevHooks()
+end
+
+-- Dev aids for emulator smoke tests, both opt-in via the environment:
+--   QUILL_AUTOSHOW=1     open the home page on startup
+--   QUILL_SHOT=<path>    dump the screen to a PNG
+-- They are independent, so QUILL_SHOT alone captures whatever KOReader
+-- itself is showing -- useful for checking other plugins' screens.
+function Quill:setupDevHooks()
+    if rawget(_G, "__quill_dev_hooks_done") then return end
+    rawset(_G, "__quill_dev_hooks_done", true)
+
+    if os.getenv("QUILL_AUTOSHOW") then
         UIManager:scheduleIn(1, function() self:showHome() end)
-        -- QUILL_SHOT=<path> also dumps the rendered page to a PNG.
-        local shot = os.getenv("QUILL_SHOT")
-        if shot then
-            UIManager:scheduleIn(3, function()
-                require("device").screen:shot(shot)
-            end)
-        end
+    end
+
+    local shot = os.getenv("QUILL_SHOT")
+    if shot then
+        local delay = tonumber(os.getenv("QUILL_SHOT_DELAY")) or 3
+        UIManager:scheduleIn(delay, function()
+            require("device").screen:shot(shot)
+        end)
     end
 end
 
