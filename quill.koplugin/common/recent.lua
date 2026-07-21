@@ -13,6 +13,63 @@ local function titleFromPath(path)
     return (name:gsub("%.[^%.]+$", ""))
 end
 
+-- Embedded metadata is frequently junk. Two patterns show up often enough to
+-- be worth correcting, and both are narrow enough to rarely misfire.
+local DOC_EXTENSIONS = {
+    pdf = true, epub = true, mobi = true, azw = true, azw3 = true,
+    djvu = true, fb2 = true, txt = true, html = true, htm = true,
+    cbz = true, cbr = true, doc = true, docx = true, rtf = true,
+    jpg = true, jpeg = true, png = true, tif = true, tiff = true,
+}
+
+--- True when a "title" is really just a filename, e.g. "img-Z03140005.pdf".
+-- Scanned PDFs routinely carry the scanner's output filename as their title.
+local function looksLikeFilename(title)
+    local ext = title:match("%.([%a%d]+)$")
+    return ext ~= nil and DOC_EXTENSIONS[ext:lower()] == true
+end
+
+--- Collapse a title that is one phrase repeated twice, e.g.
+-- "Shadow Divers Shadow Divers" -> "Shadow Divers". Restricted to multi-word
+-- halves so genuine reduplications ("Boom Boom", "Sing Sing") survive.
+local function collapseDoubled(title)
+    local mid = (#title - 1) / 2
+    if mid ~= math.floor(mid) or mid < 1 then return title end
+    if title:sub(mid + 1, mid + 1) ~= " " then return title end
+    local first, second = title:sub(1, mid), title:sub(mid + 2)
+    if first ~= second or not first:find(" ") then return title end
+    return first
+end
+
+-- Placeholder authors written by scanners and conversion tools. Showing these
+-- is worse than showing nothing, since they read as a real credit.
+local PLACEHOLDER_AUTHORS = {
+    ["administrator"] = true, ["admin"] = true, ["user"] = true,
+    ["unknown"] = true, ["unknown author"] = true, ["anonymous"] = true,
+    ["calibre"] = true, ["default"] = true, ["owner"] = true,
+}
+
+local function cleanAuthors(authors)
+    if type(authors) ~= "string" then return nil end
+    local trimmed = authors:gsub("^%s+", ""):gsub("%s+$", "")
+    if trimmed == "" then return nil end
+    if PLACEHOLDER_AUTHORS[trimmed:lower()] then return nil end
+    return trimmed
+end
+
+--- @param meta_title title from embedded metadata (may be nil or junk)
+-- @param path the book's file path, used as the fallback
+local function cleanTitle(meta_title, path)
+    if type(meta_title) ~= "string" or meta_title:gsub("%s", "") == "" then
+        return titleFromPath(path)
+    end
+    local title = meta_title:gsub("^%s+", ""):gsub("%s+$", "")
+    if looksLikeFilename(title) then
+        return titleFromPath(path)
+    end
+    return collapseDoubled(title)
+end
+
 --- Read progress as a 0..1 fraction, or nil if the book has no sidecar yet.
 local function readProgress(path)
     local ok, DocSettings = pcall(require, "docsettings")
@@ -63,8 +120,8 @@ function Recent.getBooks(limit, cover_w, cover_h)
                     info = BookInfoManager:getBookInfo(path, true)
                 end
                 if info then
-                    if info.title and info.title ~= "" then book.title = info.title end
-                    book.authors = info.authors
+                    book.title = cleanTitle(info.title, path)
+                    book.authors = cleanAuthors(info.authors)
                     -- cover_bb is owned by BookInfoManager's cache, so copy it:
                     -- the widget outlives the cache entry.
                     if info.cover_bb and info.has_cover and info.cover_fetched
