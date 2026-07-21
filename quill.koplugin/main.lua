@@ -14,13 +14,31 @@ local Quill = WidgetContainer:extend{
     is_doc_only = false,
 }
 
+local SETTING_AS_HOME = "quill_as_home_screen"
+
 function Quill:init()
     if self.ui and self.ui.menu and self.ui.menu.registerToMainMenu then
         self.ui.menu:registerToMainMenu(self)
     end
     self:onDispatcherRegisterActions()
 
+    -- Take over the landing screen. init() runs each time a FileManager is
+    -- created -- on startup and every time a book is closed -- which is
+    -- exactly when a home screen should appear. Skipped in the reader, so
+    -- Zen UI's in-book chrome is left alone.
+    if self:isHomeScreen() and self.ui and not self.ui.document then
+        -- nextTick, not now: the FileManager is still assembling its layout,
+        -- and showing a fullscreen widget mid-setup leaves it half-painted.
+        UIManager:nextTick(function() self:showHome() end)
+    end
+
     self:setupDevHooks()
+end
+
+function Quill:isHomeScreen()
+    local gs = rawget(_G, "G_reader_settings")
+    if not gs then return false end
+    return gs:nilOrTrue(SETTING_AS_HOME)
 end
 
 -- Dev aids for emulator smoke tests, both opt-in via the environment:
@@ -58,15 +76,35 @@ end
 
 function Quill:addToMainMenu(menu_items)
     menu_items.quill = {
-        text = _("Quill home"),
+        text = _("Quill"),
         sorting_hint = "tools",
-        callback = function() self:showHome() end,
+        sub_item_table = {
+            {
+                text = _("Open Quill home"),
+                keep_menu_open = false,
+                callback = function() self:showHome() end,
+            },
+            {
+                text = _("Use as home screen"),
+                help_text = _("Show Quill when the file browser opens, instead of landing in the library."),
+                checked_func = function() return self:isHomeScreen() end,
+                callback = function()
+                    G_reader_settings:flipNilOrTrue(SETTING_AS_HOME)
+                end,
+            },
+        },
     }
 end
 
 function Quill:showHome()
+    -- One FileManager can be torn down and rebuilt while a page is still up
+    -- (and the menu entry is always reachable), so guard against stacking.
+    if self.home_page and UIManager:isWidgetShown(self.home_page) then
+        return
+    end
     local HomePage = require("widgets/home_page")
-    UIManager:show(HomePage:new{})
+    self.home_page = HomePage:new{}
+    UIManager:show(self.home_page)
 end
 
 function Quill:onQuillShowHome()
