@@ -24,6 +24,9 @@ local LEVEL_COLORS = {
     Blitbuffer.Color8(0x18),
 }
 
+local TODAY_BORDER = 2
+local TODAY_COLOR = Blitbuffer.Color8(0x00)
+
 local Heatmap = Widget:extend{
     width = nil,        -- required: available width in pixels
     weeks = 26,         -- number of week columns to show
@@ -34,13 +37,19 @@ local Heatmap = Widget:extend{
 function Heatmap:init()
     self.daily = self.daily or {}
 
+    -- Today's outline is drawn in the gutter around its cell, so the widget
+    -- reserves that much padding on every side. Without it the ring would
+    -- paint outside our own dimen when today lands on an edge row/column.
+    self.inset = math.min(TODAY_BORDER + 1, self.gap)
+
     -- Derive cell size from the width we were given so the grid always fills it.
     local total_gap = self.gap * (self.weeks - 1)
-    self.cell = math.max(4, math.floor((self.width - total_gap) / self.weeks))
+    local avail_w = self.width - self.inset * 2
+    self.cell = math.max(4, math.floor((avail_w - total_gap) / self.weeks))
 
     -- Recompute width from the rounded cell size to avoid a ragged right edge.
-    self.grid_w = self.weeks * self.cell + total_gap
-    self.grid_h = 7 * self.cell + 6 * self.gap
+    self.grid_w = self.weeks * self.cell + total_gap + self.inset * 2
+    self.grid_h = 7 * self.cell + 6 * self.gap + self.inset * 2
 
     self:buildGrid()
 end
@@ -77,6 +86,7 @@ function Heatmap:buildGrid()
                     col = col,
                     row = row,
                     level = self:levelFor(pages, max_pages),
+                    is_today = ts == today,
                 }
                 if pages > 0 then
                     self.total_pages = self.total_pages + pages
@@ -104,13 +114,25 @@ end
 function Heatmap:paintTo(bb, x, y)
     self.dimen = Geom:new{ x = x, y = y, w = self.grid_w, h = self.grid_h }
     local step = self.cell + self.gap
+    local ox, oy = x + self.inset, y + self.inset
+    local today
+
     for _, c in ipairs(self.cells) do
-        bb:paintRect(
-            x + c.col * step,
-            y + c.row * step,
-            self.cell,
-            self.cell,
-            LEVEL_COLORS[c.level])
+        local cx, cy = ox + c.col * step, oy + c.row * step
+        bb:paintRect(cx, cy, self.cell, self.cell, LEVEL_COLORS[c.level])
+        if c.is_today then today = { x = cx, y = cy } end
+    end
+
+    -- Outline today in the gutter *around* the cell rather than on top of it,
+    -- so the ring stays visible whether the square is empty or nearly black.
+    if today then
+        bb:paintBorder(
+            today.x - self.inset,
+            today.y - self.inset,
+            self.cell + self.inset * 2,
+            self.cell + self.inset * 2,
+            TODAY_BORDER,
+            TODAY_COLOR)
     end
 end
 
