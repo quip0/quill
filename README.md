@@ -7,8 +7,11 @@ Quill replaces the home screen with one screen and nothing else:
 - **Reading heatmap** — GitHub/Anki style. One column per week, Sunday to
   Saturday, most recent week on the right. The more pages read that day, the
   darker the square. Today's square is outlined.
-- **Continue reading** — the three most recently opened books, most recent
-  first, with cover, author and progress. Tap to open.
+- **Selected book** — cover, title, author and progress for one book, with a
+  **Continue reading** button that opens it. The most recently read book is
+  selected when the page opens.
+- **Recent books** — a strip of the six most recently opened books' covers,
+  most recent first, each with a thin progress bar. Tap a cover to select it.
 
 Quill owns the **home screen only**. It deliberately does not touch the reader,
 so a reader-side UI plugin such as Zen UI keeps working alongside it: Quill
@@ -83,7 +86,9 @@ quill.koplugin/
   common/recent.lua       recent books + metadata sanitizing
   widgets/home_page.lua   assembles the page
   widgets/heatmap.lua     the activity grid
-  widgets/book_row.lua    one book entry
+  widgets/book_detail.lua the selected book and its button
+  widgets/cover_cell.lua  one cover in the recent-books strip
+  widgets/tap_text.lua    a line of text with a generous tap target
   widgets/topbar.lua      icon dashbar (built, not currently shown)
 ```
 

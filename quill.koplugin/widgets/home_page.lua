@@ -4,7 +4,11 @@ The Quill home page.
 One screen, top to bottom:
   - top dashbar with icon buttons
   - reading activity heatmap (darker square = more pages that day)
-  - the three most recently opened books, most recent first
+  - the selected book in full, with the button that opens it
+  - a strip of the most recently opened books' covers, most recent first
+
+Tapping a cover in the strip selects it; the most recent book is selected
+when the page opens.
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
@@ -13,6 +17,8 @@ local Device = require("device")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local Size = require("ui/size")
@@ -25,7 +31,8 @@ local _ = require("gettext")
 local N_ = _.ngettext
 local T = require("ffi/util").template
 
-local BookRow = require("widgets/book_row")
+local BookDetail = require("widgets/book_detail")
+local CoverCell = require("widgets/cover_cell")
 local Heatmap = require("widgets/heatmap")
 local Quotes = require("common/quotes")
 local Recent = require("common/recent")
@@ -35,7 +42,11 @@ local TapText = require("widgets/tap_text")
 local Screen = Device.screen
 
 local HEATMAP_WEEKS = 26
-local RECENT_COUNT = 3
+local RECENT_COUNT = 6
+
+-- Height of the selected-book panel, before screen scaling. Tall enough for a
+-- two-line title, author, progress and the button beside a 2:3 cover.
+local DETAIL_HEIGHT = 160
 
 -- How often the open page re-checks the statistics database. The check itself
 -- is two lfs.attributes() calls, and nothing is redrawn unless the numbers
@@ -212,45 +223,73 @@ function HomePage:build()
         end
     end
 
-    -- Kept as a reference: once the rows are measured, whatever vertical room
-    -- is still unused gets folded into this gap, so the book strip sits against
+    -- Kept as references: once everything is measured, whatever vertical room
+    -- is still unused is split between these two gaps, so the detail panel
+    -- floats midway between the quote and the strip, and the strip sits against
     -- the bottom of the panel instead of leaving a dead band under it.
-    local flex_gap = VerticalSpan:new{ width = Size.padding.large * 3 }
-    table.insert(body, flex_gap)
-    table.insert(body, sectionLabel(_("Continue reading"), content_w))
+    local gap_above = VerticalSpan:new{ width = Size.padding.large * 3 }
+    local gap_below = VerticalSpan:new{ width = Size.padding.large * 2 }
+    table.insert(body, gap_above)
+    -- The selected book's details land here once the books are loaded; the
+    -- holder keeps a fixed size so swapping its contents never moves the page.
+    self.detail_h = Screen:scaleBySize(DETAIL_HEIGHT)
+    self.detail_holder = LeftContainer:new{
+        dimen = Geom:new{ w = content_w, h = self.detail_h },
+        VerticalSpan:new{ width = 0 },
+    }
+    self.content_w = content_w
+    table.insert(body, self.detail_holder)
+    table.insert(body, gap_below)
+    table.insert(body, sectionLabel(_("Recent books"), content_w))
     table.insert(body, VerticalSpan:new{ width = Size.padding.default })
 
-    -- Size the covers to whatever vertical room is left, so all three rows fit
-    -- regardless of panel height, and never exceed a comfortable maximum.
+    -- The covers share the column width equally. Height only becomes the
+    -- limit on a short or landscape panel, where the strip gives way rather
+    -- than push the page past the bottom of the screen.
     -- getSize() memoizes child offsets, so anything measured mid-build must be
     -- followed by resetLayout() once the remaining children are appended --
     -- otherwise paintTo walks a stale offset table and indexes nil.
-    local used_h = body:getSize().h + Size.padding.large * 4
-    local per_row = math.floor((self.screen_h - used_h) / RECENT_COUNT)
-    local cover_h = math.max(
-        Screen:scaleBySize(64),
-        math.min(Screen:scaleBySize(120), per_row - Size.padding.large * 2))
-    local cover_w = math.floor(cover_h * 2 / 3)
+    local cover_gap = Size.padding.large
+    local cover_w = math.floor((content_w - cover_gap * (RECENT_COUNT - 1)) / RECENT_COUNT)
+    local cover_h = math.floor(cover_w * 3 / 2)
+    local used_h = body:getSize().h + Size.padding.large * 6
+    local room_h = self.screen_h - used_h - (CoverCell.heightFor(cover_h) - cover_h)
+    if cover_h > room_h then
+        cover_h = math.max(Screen:scaleBySize(64), room_h)
+        cover_w = math.floor(cover_h * 2 / 3)
+    end
 
-    local books = Recent.getBooks(RECENT_COUNT, cover_w, cover_h)
-    if #books == 0 then
+    -- Asked for at the detail panel's size, the larger of the two places a
+    -- cover is drawn, so a cover extracted here is sharp in both.
+    self.books = Recent.getBooks(RECENT_COUNT,
+        math.floor(self.detail_h * 2 / 3), self.detail_h)
+    self.cells = {}
+    if #self.books == 0 then
         table.insert(body, TextWidget:new{
             text = _("No books opened yet."),
             face = Font:getFace("cfont", 16),
             fgcolor = Blitbuffer.Color8(0x77),
         })
     else
-        for i, book in ipairs(books) do
+        local strip = HorizontalGroup:new{ align = "top" }
+        for i, book in ipairs(self.books) do
             if i > 1 then
-                table.insert(body, VerticalSpan:new{ width = Size.padding.large * 2 })
+                table.insert(strip, HorizontalSpan:new{ width = cover_gap })
             end
-            table.insert(body, BookRow:new{
+            local cell = CoverCell:new{
                 book = book,
-                width = content_w,
+                cover_w = cover_w,
                 cover_h = cover_h,
-                on_tap = function(b) self:openBook(b) end,
-            })
+                -- The most recent book is the one on show when the page opens.
+                selected = i == 1,
+                on_tap = function(c) self:selectCell(c) end,
+            }
+            self.cells[i] = cell
+            table.insert(strip, cell)
         end
+        table.insert(body, strip)
+        self.selected_cell = self.cells[1]
+        self.detail_holder[1] = self:buildDetail(self.books[1])
     end
 
     body:resetLayout()
@@ -260,7 +299,7 @@ function HomePage:build()
     local top_pad = Size.padding.large * 3
     local leftover = self.screen_h - top_pad * 2 - body:getSize().h
 
-    -- A long quote can eat the room the book rows need. Rather than truncate it,
+    -- A long quote can eat the room the book strip needs. Rather than truncate it,
     -- step the type down a point at a time until the whole thing fits: the quote
     -- is the only block on the page that can give, and every word stays on
     -- screen. Long quotes just set smaller than short ones.
@@ -277,7 +316,9 @@ function HomePage:build()
     end
 
     if leftover > 0 then
-        flex_gap.width = flex_gap.width + leftover
+        local half = math.floor(leftover / 2)
+        gap_above.width = gap_above.width + half
+        gap_below.width = gap_below.width + leftover - half
         body:resetLayout()
     end
 
@@ -408,6 +449,29 @@ function HomePage:scheduleRefresh()
     UIManager:scheduleIn(REFRESH_INTERVAL, self.refresh_task)
 end
 
+function HomePage:buildDetail(book)
+    return BookDetail:new{
+        book = book,
+        width = self.content_w,
+        height = self.detail_h,
+        on_open = function(b) self:openBook(b) end,
+    }
+end
+
+--- Move the selection to a tapped cover and show that book in the panel.
+-- Selecting never opens anything; only the panel's button does that.
+function HomePage:selectCell(cell)
+    if cell == self.selected_cell then return end
+    if self.selected_cell then self.selected_cell:setSelected(false) end
+    cell:setSelected(true)
+    self.selected_cell = cell
+
+    local old = self.detail_holder[1]
+    self.detail_holder[1] = self:buildDetail(cell.book)
+    if old and old.free then old:free() end
+    UIManager:setDirty(self, "ui")
+end
+
 function HomePage:openBook(book)
     UIManager:close(self)
     local ReaderUI = require("apps/reader/readerui")
@@ -438,6 +502,13 @@ end
 
 function HomePage:onCloseWidget()
     UIManager:unschedule(self.refresh_task)
+    -- The cover blitbuffers are ours: the widgets only ever drew scaled copies.
+    for _idx, book in ipairs(self.books or {}) do
+        if book.cover_bb then
+            book.cover_bb:free()
+            book.cover_bb = nil
+        end
+    end
     UIManager:setDirty(nil, "full")
 end
 
