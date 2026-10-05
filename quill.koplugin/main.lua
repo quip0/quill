@@ -99,7 +99,10 @@ end
 function Quill:showHome()
     -- One FileManager can be torn down and rebuilt while a page is still up
     -- (and the menu entry is always reachable), so guard against stacking.
+    -- The showing page is refreshed rather than left alone: whatever prompted
+    -- the call is as good a moment as any for it to catch up on the stats.
     if self.home_page and UIManager:isWidgetShown(self.home_page) then
+        self.home_page:refreshStats()
         return
     end
     local HomePage = require("widgets/home_page")

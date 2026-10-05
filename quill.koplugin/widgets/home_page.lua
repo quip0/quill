@@ -22,17 +22,39 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local _ = require("gettext")
+local N_ = _.ngettext
+local T = require("ffi/util").template
 
 local BookRow = require("widgets/book_row")
 local Heatmap = require("widgets/heatmap")
 local Quotes = require("common/quotes")
 local Recent = require("common/recent")
 local Stats = require("common/stats")
+local TapText = require("widgets/tap_text")
 
 local Screen = Device.screen
 
 local HEATMAP_WEEKS = 26
 local RECENT_COUNT = 3
+
+-- How often the open page re-checks the statistics database. The check itself
+-- is two lfs.attributes() calls, and nothing is redrawn unless the numbers
+-- moved, so this is cheap enough to run while the home screen sits idle.
+local REFRESH_INTERVAL = 60
+
+-- Tapping the summary line walks through these in order and wraps around.
+-- Every scope reports both a page count and the number of days it was spread
+-- over, so the tap only changes the window, never the shape of the sentence.
+local SUMMARY_SCOPES = { "all", "year", "month", "week" }
+local SUMMARY_FORMAT = {
+    all   = _("%1 over %2"),
+    year  = _("%1 over %2 this year"),
+    month = _("%1 over %2 this month"),
+    week  = _("%1 over %2 this week"),
+}
+-- Remembered globally rather than per page: the home page is rebuilt every time
+-- a book is closed, so an instance field would snap back to "all" constantly.
+local SETTING_SUMMARY_SCOPE = "quill_summary_scope"
 
 -- The quote sets at QUOTE_MAX_PT and steps down a point at a time until the
 -- page fits. Nothing below QUOTE_MIN_PT is worth reading on e-ink.
@@ -42,6 +64,33 @@ local QUOTE_MIN_PT = 9
 local HomePage = InputContainer:extend{
     covers_fullscreen = true,
 }
+
+-- "2026-07-22" -> "Jul 22, 2026". Anchored at noon so the label can't slip a
+-- day on a daylight-saving boundary.
+local function formatDay(date_str)
+    local y, m, d = date_str:match("(%d+)-(%d+)-(%d+)")
+    if not y then return date_str end
+    local ts = os.time{ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 }
+    return os.date("%b %d, %Y", ts)
+end
+
+--- The first day a scope covers, as "YYYY-MM-DD", or nil for all of history.
+-- ISO dates sort lexicographically, so callers can compare with plain <=.
+-- Weeks start on Sunday, matching the heatmap's rows.
+local function scopeStart(scope)
+    local t = os.date("*t")
+    if scope == "year" then
+        return string.format("%04d-01-01", t.year)
+    elseif scope == "month" then
+        return string.format("%04d-%02d-01", t.year, t.month)
+    elseif scope == "week" then
+        -- Anchored at noon so a daylight-saving shift can't land the subtraction
+        -- on the wrong calendar day. wday is 1 on Sunday.
+        local noon = os.time{ year = t.year, month = t.month, day = t.day, hour = 12 }
+        return os.date("%Y-%m-%d", noon - (t.wday - 1) * 86400)
+    end
+    return nil
+end
 
 local function sectionLabel(text, width)
     return LeftContainer:new{
@@ -73,6 +122,13 @@ function HomePage:init()
     end
     self.key_events = { Close = { { Device.input.group.Back } } }
 
+    -- Held as a field so it can be unscheduled by identity on close; a fresh
+    -- closure each time would leave the old one queued.
+    self.refresh_task = function()
+        self:refreshStats()
+        self:scheduleRefresh()
+    end
+
     self:build()
 end
 
@@ -80,28 +136,50 @@ function HomePage:build()
     local margin = Size.padding.large * 2
     local content_w = self.screen_w - margin * 2
 
-    -- Half a year of history is enough to read at a glance without the
-    -- squares getting too small on a 6.8" panel.
-    local since = os.time() - HEATMAP_WEEKS * 7 * 86400
+    -- Stamped before the query, so a write that lands while we read is caught
+    -- by the next refresh rather than being mistaken for already-loaded data.
+    self.stats_stamp = Stats.getStamp()
+    self.today_date = os.date("%Y-%m-%d")
+
+    self.summary_scope = self:readScope()
+
+    -- The whole history, not just the drawn window: the summary line can be
+    -- asked for an all-time total, and the heatmap ignores dates outside the
+    -- half-year it draws. Unbounded costs no more than a bounded query --
+    -- there is no index on start_time either way, and the rows are few.
+    self.daily = Stats.getDailyPages(0)
     local heatmap = Heatmap:new{
         width = content_w,
         weeks = HEATMAP_WEEKS,
-        daily = Stats.getDailyPages(since),
+        daily = self.daily,
+        -- Tapping a day swaps the "today" line for that day's total; the
+        -- default line comes back the next time the page is opened.
+        on_tap_day = function(date) self:showDay(date) end,
     }
-
-    local summary = string.format(
-        _("%d pages over %d days"), heatmap.total_pages, heatmap.active_days)
+    self.heatmap = heatmap
 
     local body = VerticalGroup:new{ align = "left" }
     table.insert(body, sectionLabel(_("Reading activity"), content_w))
     table.insert(body, VerticalSpan:new{ width = Size.padding.default })
+    self.day_line = TextWidget:new{
+        text = self:todayText(),
+        face = Font:getFace("NotoSans-Italic.ttf", 16),
+    }
+    table.insert(body, self.day_line)
+    table.insert(body, VerticalSpan:new{ width = Size.padding.default })
     table.insert(body, heatmap)
     table.insert(body, VerticalSpan:new{ width = Size.padding.default })
-    table.insert(body, TextWidget:new{
-        text = summary,
+    self.summary_line = TapText:new{
+        text = self:summaryText(),
         face = Font:getFace("cfont", 14),
         fgcolor = Blitbuffer.Color8(0x77),
-    })
+        -- The line is short and thin; the whole width of the column and the
+        -- gap under it are given over to the target so it can be hit at all.
+        tap_width = content_w,
+        tap_pad = Size.padding.default,
+        on_tap = function() self:cycleSummaryScope() end,
+    }
+    table.insert(body, self.summary_line)
 
     -- Zen UI's quote of the day, sitting between the activity block and the
     -- books. Skipped entirely when Zen UI isn't installed or its list is empty,
@@ -221,6 +299,115 @@ function HomePage:build()
     }
 end
 
+--- Keyed by local calendar date, same as the stats query, so the counter
+-- naturally starts over at zero when the day rolls over.
+function HomePage:todayText()
+    local pages = self.daily[self.today_date] or 0
+    return pages == 1
+        and _("1 page read today")
+        or string.format(_("%d pages read today"), pages)
+end
+
+--- Read the remembered summary scope, discarding anything unrecognised so a
+-- stale or hand-edited setting can't leave the line with no format string.
+function HomePage:readScope()
+    local gs = rawget(_G, "G_reader_settings")
+    local saved = gs and gs:readSetting(SETTING_SUMMARY_SCOPE)
+    for _idx, scope in ipairs(SUMMARY_SCOPES) do
+        if saved == scope then return saved end
+    end
+    return SUMMARY_SCOPES[1]
+end
+
+--- Totals for the current scope, summed straight from the daily counts rather
+-- than re-queried: the map already holds every day of history, so switching
+-- scope is arithmetic over a few hundred entries and needs no database round
+-- trip on the tap.
+function HomePage:summaryText()
+    local from = scopeStart(self.summary_scope)
+    local pages, days = 0, 0
+    for date, n in pairs(self.daily) do
+        if n > 0 and (not from or date >= from) then
+            pages = pages + n
+            days = days + 1
+        end
+    end
+    return T(SUMMARY_FORMAT[self.summary_scope],
+        T(N_("1 page", "%1 pages", pages), pages),
+        T(N_("1 day", "%1 days", days), days))
+end
+
+--- Step the summary line to the next scope, wrapping at the end.
+function HomePage:cycleSummaryScope()
+    local next_idx = 1
+    for i, scope in ipairs(SUMMARY_SCOPES) do
+        if scope == self.summary_scope then
+            next_idx = i % #SUMMARY_SCOPES + 1
+            break
+        end
+    end
+    self.summary_scope = SUMMARY_SCOPES[next_idx]
+
+    local gs = rawget(_G, "G_reader_settings")
+    if gs then gs:saveSetting(SETTING_SUMMARY_SCOPE, self.summary_scope) end
+
+    self.summary_line:setText(self:summaryText())
+    UIManager:setDirty(self, "ui")
+end
+
+--- The wording for whichever day the ring currently sits on. Today keeps the
+-- "pages read today" phrasing rather than restating its own date.
+function HomePage:dayText(date)
+    if date == self.today_date then return self:todayText() end
+    return string.format(_("Pages read on %s: %d"),
+        formatDay(date), self.daily[date] or 0)
+end
+
+--- Show a tapped day's page total in place of the "pages read today" line.
+-- The line keeps its font and single-line height, so only its text changes and
+-- the surrounding layout stays put; a ui refresh repaints over the old text.
+function HomePage:showDay(date)
+    if not self.day_line then return end
+    self.day_line:setText(self:dayText(date))
+    UIManager:setDirty(self, "ui")
+end
+
+--- Re-read the statistics database and update the activity block in place.
+--
+-- This is what keeps the page honest while KOReader stays up: pages read in a
+-- session reach the database only when the statistics plugin flushes, and the
+-- day rolls over at midnight regardless of whether anything was redrawn.
+--
+-- Nothing is repainted unless the numbers actually moved -- an unnecessary
+-- refresh is a visible flash on e-ink, and this runs on a timer.
+-- @param force re-query even if the database looks untouched
+function HomePage:refreshStats(force)
+    if not self.heatmap then return end
+
+    Stats.flush()
+    local stamp = Stats.getStamp()
+    local today = os.date("%Y-%m-%d")
+    if not force and stamp == self.stats_stamp and today == self.today_date then
+        return
+    end
+    self.stats_stamp = stamp
+    self.today_date = today
+
+    self.daily = Stats.getDailyPages(0, true)
+    -- Rebuilds the grid against the new counts, which also re-derives the shade
+    -- breakpoints and walks today's column forward if the date changed.
+    self.heatmap:setDaily(self.daily)
+
+    self.day_line:setText(self:dayText(self.heatmap.selected_date))
+    self.summary_line:setText(self:summaryText())
+    UIManager:setDirty(self, "ui")
+end
+
+function HomePage:scheduleRefresh()
+    UIManager:unschedule(self.refresh_task)
+    UIManager:scheduleIn(REFRESH_INTERVAL, self.refresh_task)
+end
+
 function HomePage:openBook(book)
     UIManager:close(self)
     local ReaderUI = require("apps/reader/readerui")
@@ -233,11 +420,24 @@ function HomePage:onClose()
 end
 
 function HomePage:onShow()
+    -- Covers the page being uncovered after a book was read on top of it: the
+    -- data it was built with can be a whole session out of date by now.
+    self:refreshStats()
+    self:scheduleRefresh()
     UIManager:setDirty(self, "full")
     return true
 end
 
+--- Waking is the one moment the page is guaranteed to be stale: the timer does
+-- not run while the device is asleep, and the sleep may have crossed midnight.
+-- Not consumed -- other widgets still need the event.
+function HomePage:onResume()
+    self:refreshStats()
+    self:scheduleRefresh()
+end
+
 function HomePage:onCloseWidget()
+    UIManager:unschedule(self.refresh_task)
     UIManager:setDirty(nil, "full")
 end
 

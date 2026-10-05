@@ -9,15 +9,45 @@ local logger = require("logger")
 
 local Stats = {}
 
--- The live statistics plugin buffers the current session in memory. Without
--- forcing a write, today's reading is missing from the database.
-local function flushPendingStats()
-    local ok, PluginLoader = pcall(require, "pluginloader")
-    if not ok then return end
-    local plugin = PluginLoader:getPluginInstance("statistics")
-    if not plugin then return end
-    if type(plugin.isEnabled) == "function" and not plugin:isEnabled() then return end
+--- Push the live statistics plugin's in-memory buffer out to the database.
+-- The current session is only held in RAM until something triggers insertDB(),
+-- so without this the pages read since the book was opened are missing.
+function Stats.flush()
+    -- ReaderUI:onClose() runs PluginLoader:finalize() *before* the FileManager
+    -- is rebuilt, which empties the loader's table -- so ask the live reader
+    -- first and only fall back to the loader.
+    local plugin
+    local ok_ui, ReaderUI = pcall(require, "apps/reader/readerui")
+    if ok_ui and ReaderUI.instance then
+        plugin = ReaderUI.instance.statistics
+    end
+    if not plugin then
+        local ok_pl, PluginLoader = pcall(require, "pluginloader")
+        if ok_pl then plugin = PluginLoader:getPluginInstance("statistics") end
+    end
+    if not plugin or type(plugin.insertDB) ~= "function" then return end
+
+    -- Deliberately not gated on isEnabled(): that also demands an open
+    -- document, which is never true on the home screen, so the gate turned this
+    -- into a no-op exactly where it was needed. insertDB() already guards
+    -- itself on there being a current book, so calling it is always safe.
     pcall(plugin.insertDB, plugin)
+end
+
+--- A cheap fingerprint of the database, for skipping needless re-queries.
+-- Stamps the -wal sidecar too: in WAL mode (the default where the device
+-- supports it) writes land there and leave the main file untouched.
+function Stats.getStamp()
+    local lfs = require("libs/libkoreader-lfs")
+    local path = Stats.getDbPath()
+    local parts = {}
+    for _, p in ipairs({ path, path .. "-wal" }) do
+        local attr = lfs.attributes(p)
+        parts[#parts + 1] = attr
+            and (tostring(attr.modification) .. ":" .. tostring(attr.size))
+            or "-"
+    end
+    return table.concat(parts, "/")
 end
 
 function Stats.getDbPath()
@@ -32,9 +62,10 @@ end
 
 --- Pages read per day, as a map of "YYYY-MM-DD" -> page count.
 -- @param since_ts unix timestamp; only days at or after this are returned
-function Stats.getDailyPages(since_ts)
+-- @param no_flush skip the Stats.flush() call, for callers that just made one
+function Stats.getDailyPages(since_ts, no_flush)
     local result = {}
-    flushPendingStats()
+    if not no_flush then Stats.flush() end
 
     local path = Stats.getDbPath()
     local lfs = require("libs/libkoreader-lfs")
